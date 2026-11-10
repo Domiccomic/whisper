@@ -22,3 +22,16 @@ Important limits
 - There is no end-to-end encryption. The room code is an invitation, not a
   password: anyone with the link can join. Do not use it for sensitive secrets.
 - No account system, durable storage, or abuse controls are included yet.
+
+Chat features
+- Anonymous nicknames, live typing and read indicators, and message reactions.
+- Shared room color themes and quick polls.
+- Voice notes and photos (each upload is limited to about 1.2 MB).
+- One time messages reveal to the first person who opens them, then clear.
+- Schedule text messages up to 24 hours ahead.
+- Close and clear a room for everyone with the panic close button.
+- Regular message expiry options: 10 minutes, 1 hour, 1 day, or never.
+
+Voice recording needs HTTPS (provided by Render) and browser microphone access.
+Scheduled messages, rooms, and uploaded media are in memory and are lost if the
+service restarts. The panic close cannot be undone for that room code.
