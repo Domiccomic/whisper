@@ -66,3 +66,5 @@ Local preferences
 - Adjust text size, contrast, reduced motion, color, backdrop and voice playback speed.
 - Save drafts, use quick replies, and show unread message counts in the page title.
 - Preferences, drafts and saved messages live in this browser. They do not sync.
+- Record and share 10-second video clips, add captions to photos/videos, and send a one-time location or contact card when you choose.
+- Add image and animated-GIF stickers to a personal sticker pack; sent stickers are shared as room images.

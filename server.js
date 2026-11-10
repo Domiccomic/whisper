@@ -133,10 +133,10 @@ const server = http.createServer((req, res) => {
             room.timers.set(`scheduled-${item.id}`, setTimeout(() => { room.timers.delete(`scheduled-${item.id}`); if (!room.closed) { item.time = new Date().toISOString(); item.expiresAt = ttlFor(input.expiry) ? Date.now() + ttlFor(input.expiry) : null; publish(room, item); } }, scheduleAt - Date.now()).unref());
             return json(res, 200, { ok: true, scheduled: true });
           }
-          if (input.type === 'photo' || input.type === 'voice') {
-            if (typeof input.data !== 'string' || input.data.length > 1800000 || !/^data:(image\/(png|jpeg|webp|gif)|audio\/(webm|ogg|mp4|mpeg));base64,/.test(input.data)) return json(res, 400, { error: 'That file is too large or has an unsupported format.' });
+          if (input.type === 'photo' || input.type === 'voice' || input.type === 'video') {
+            if (typeof input.data !== 'string' || input.data.length > 1800000 || !/^data:(image\/(png|jpeg|webp|gif)|audio\/(webm|ogg|mp4|mpeg)|video\/(webm|mp4));base64,/.test(input.data)) return json(res, 400, { error: 'That file is too large or has an unsupported format.' });
             item.type = input.type; item.data = input.data;
-            item.message = input.type === 'photo' ? 'Photo' : 'Voice note';
+            item.message = input.type === 'photo' ? ('Photo'+(String(input.caption||'').trim()?' · '+String(input.caption).trim().slice(0,160):'')) : input.type === 'video' ? ('Video clip'+(String(input.caption||'').trim()?' · '+String(input.caption).trim().slice(0,160):'')) : 'Voice note';
           } else if (input.type === 'poll') {
             if (input.oneTime) return json(res, 400, { error: 'Polls stay available so everyone can vote.' });
             const question = String(input.question || '').trim().slice(0, 140);
