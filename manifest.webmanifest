@@ -1,0 +1,11 @@
+{
+  "name": "Whisper — a little space to talk",
+  "short_name": "Whisper",
+  "description": "A quiet room for private conversations.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f5f2",
+  "theme_color": "#f6f5f2",
+  "icons": [{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
+}

@@ -68,3 +68,4 @@ Local preferences
 - Preferences, drafts and saved messages live in this browser. They do not sync.
 - Record and share 10-second video clips, add captions to photos/videos, and send a one-time location or contact card when you choose.
 - Add image and animated-GIF stickers to a personal sticker pack; sent stickers are shared as room images.
+- Install Whisper as a home-screen app. The shell loads offline; messages need a connection, while drafts remain on the device.

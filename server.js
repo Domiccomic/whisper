@@ -5,6 +5,11 @@ const { randomUUID } = require('node:crypto');
 
 const PORT = Number(process.env.PORT || 3000);
 const PAGE = path.join(__dirname, 'whisper-room.html');
+const PUBLIC_ASSETS = new Map([
+  ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
+  ['/sw.js', ['sw.js', 'text/javascript; charset=utf-8']],
+  ['/icon.svg', ['icon.svg', 'image/svg+xml']],
+]);
 const rooms = new Map();
 const ttlFor = value => ({ '10 minutes': 600000, '1 hour': 3600000, '1 day': 86400000 }[value] || 0);
 
@@ -52,6 +57,11 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/whisper-room.html')) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     fs.createReadStream(PAGE).pipe(res); return;
+  }
+  if (req.method === 'GET' && PUBLIC_ASSETS.has(url.pathname)) {
+    const [filename, contentType] = PUBLIC_ASSETS.get(url.pathname);
+    res.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-cache', ...(filename === 'sw.js' ? { 'service-worker-allowed': '/' } : {}) });
+    fs.createReadStream(path.join(__dirname, filename)).pipe(res); return;
   }
   if (url.pathname === '/events' && req.method === 'GET') {
     const id = (url.searchParams.get('room') || '').toUpperCase();
