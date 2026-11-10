@@ -137,7 +137,8 @@ const server = http.createServer((req, res) => {
         }
         if (!item) return json(res, 404, { error: 'Message not found.' });
         if (action === 'react') {
-          const emoji = ['💚','😂','👀','✨','🫶'].includes(input.emoji) ? input.emoji : '💚';
+          const emoji = String(input.emoji || '').trim();
+          if (!emoji || [...emoji].length > 12) return json(res, 400, { error: 'Choose a single emoji reaction.' });
           item.reactions ||= {};
           const reactors = new Set(item.reactions[emoji] || []);
           if (reactors.has(clientId)) reactors.delete(clientId); else reactors.add(clientId);

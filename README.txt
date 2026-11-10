@@ -42,3 +42,5 @@ More chat controls
   browser permission has been granted.
 - Reply to messages with a quote that jumps back to the original. Edit or unsend
   your own text messages; the server checks who sent each message.
+- Emoji picker inserts emoji in messages. Add Favorite saves personal emoji for
+  quick reactions on this browser; those reactions are visible to everyone.
