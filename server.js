@@ -9,7 +9,7 @@ const rooms = new Map();
 const ttlFor = value => ({ '10 minutes': 600000, '1 hour': 3600000, '1 day': 86400000 }[value] || 0);
 
 function getRoom(id) {
-  if (!rooms.has(id)) rooms.set(id, { clients: new Map(), messages: [], timers: new Map(), theme: 'fern', closed: false, call: null });
+  if (!rooms.has(id)) rooms.set(id, { clients: new Map(), messages: [], timers: new Map(), theme: 'fern', closed: false, call: null, pinnedId: null });
   return rooms.get(id);
 }
 function publicMessage(message, viewerId = '') {
@@ -36,6 +36,7 @@ function expireMessage(room, item, except = '') {
   const timer = room.timers.get(item.id); if (timer) clearTimeout(timer);
   room.timers.delete(item.id);
   broadcast(room, 'expire', { id: item.id }, except);
+  if (room.pinnedId === item.id) { room.pinnedId = null; broadcast(room, 'pinned', null); }
 }
 function publish(room, item) {
   room.messages.push(item);
@@ -60,6 +61,8 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
     res.write(`event: history\ndata: ${JSON.stringify(room.messages.map(item => publicMessage(item, clientId)))}\n\n`);
     res.write(`event: theme\ndata: ${JSON.stringify({ theme: room.theme })}\n\n`);
+    const pinned = room.messages.find(item => item.id === room.pinnedId);
+    if (pinned) res.write(`event: pinned\ndata: ${JSON.stringify(publicMessage(pinned, clientId))}\n\n`);
     if (room.closed) res.write('event: closed\ndata: {}\n\n');
     const connection = { res, quiet: url.searchParams.get('quiet') === '1' };
     room.clients.set(clientId, connection);
@@ -154,6 +157,18 @@ const server = http.createServer((req, res) => {
         if (action === 'theme') {
           if (!['fern','ocean','plum','sunset'].includes(input.theme)) return json(res, 400, { error: 'Choose one of the available room themes.' });
           room.theme = input.theme; broadcast(room, 'theme', { theme: room.theme }); return json(res, 200, { ok: true });
+        }
+        if (action === 'pin') {
+          const pinned = room.messages.find(message => message.id === input.messageId);
+          if (!pinned || pinned.secret) return json(res, 404, { error: 'That message cannot be pinned.' });
+          room.pinnedId = pinned.id;
+          broadcast(room, 'pinned', publicMessage(pinned));
+          return json(res, 200, { ok: true });
+        }
+        if (action === 'unpin') {
+          if (room.pinnedId === input.messageId) room.pinnedId = null;
+          broadcast(room, 'pinned', null);
+          return json(res, 200, { ok: true });
         }
         if (action === 'quiet') {
           const current = room.clients.get(clientId);

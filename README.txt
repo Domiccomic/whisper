@@ -54,3 +54,9 @@ Calling
 - Camera and microphone permissions are needed. The current setup uses public
   STUN servers without a TURN relay, so some restrictive networks may not
   connect successfully.
+
+Message organization
+- Search the messages currently in a room and pin one shared message.
+- Save messages in this browser, copy their text, or forward a text summary
+  into the current room. Saved items are local to this browser and room.
+- Messages that expire or are unsent are automatically removed from the pin.
