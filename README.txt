@@ -44,3 +44,13 @@ More chat controls
   your own text messages; the server checks who sent each message.
 - Emoji picker inserts emoji in messages. Add Favorite saves personal emoji for
   quick reactions on this browser; those reactions are visible to everyone.
+
+Calling
+- Start a one-to-one voice or video call from the phone button in the room.
+- Calls use browser WebRTC. Whisper relays call invitations and connection
+  setup, while call audio/video travels directly between participants.
+- Calls are not recorded by this app. Direct calls can expose each participant's
+  network address to the other participant and the public STUN service.
+- Camera and microphone permissions are needed. The current setup uses public
+  STUN servers without a TURN relay, so some restrictive networks may not
+  connect successfully.

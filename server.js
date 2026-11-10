@@ -9,7 +9,7 @@ const rooms = new Map();
 const ttlFor = value => ({ '10 minutes': 600000, '1 hour': 3600000, '1 day': 86400000 }[value] || 0);
 
 function getRoom(id) {
-  if (!rooms.has(id)) rooms.set(id, { clients: new Map(), messages: [], timers: new Map(), theme: 'fern', closed: false });
+  if (!rooms.has(id)) rooms.set(id, { clients: new Map(), messages: [], timers: new Map(), theme: 'fern', closed: false, call: null });
   return rooms.get(id);
 }
 function publicMessage(message, viewerId = '') {
@@ -63,13 +63,14 @@ const server = http.createServer((req, res) => {
     if (room.closed) res.write('event: closed\ndata: {}\n\n');
     const connection = { res, quiet: url.searchParams.get('quiet') === '1' };
     room.clients.set(clientId, connection);
+    if (room.call && room.call.from !== clientId && !room.call.to) res.write(`event: callInvite\ndata: ${JSON.stringify({ callId: room.call.id, from: room.call.from, name: room.call.name, type: room.call.type })}\n\n`);
     broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length });
     const heartbeat = setInterval(() => res.write(': keepalive\n\n'), 20000);
-    req.on('close', () => { clearInterval(heartbeat); if (room.clients.get(clientId) === connection) room.clients.delete(clientId); broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length }); });
+    req.on('close', () => { clearInterval(heartbeat); if (room.clients.get(clientId) === connection) { room.clients.delete(clientId); if (room.call && (room.call.from === clientId || room.call.to === clientId)) { broadcast(room, 'callEnded', { callId: room.call.id, reason: 'disconnected' }, clientId); room.call = null; } } broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length }); });
     return;
   }
-  if (req.method === 'POST' && (url.pathname === '/send' || url.pathname === '/action')) {
-    const maxBytes = url.pathname === '/send' ? 2400000 : 12000;
+  if (req.method === 'POST' && ['/send', '/action', '/call', '/signal'].includes(url.pathname)) {
+    const maxBytes = url.pathname === '/send' ? 2400000 : url.pathname === '/signal' ? 180000 : 12000;
     let body = '', tooLarge = false;
     req.on('data', chunk => { body += chunk; if (body.length > maxBytes) { tooLarge = true; req.destroy(); } });
     req.on('end', () => {
@@ -80,6 +81,42 @@ const server = http.createServer((req, res) => {
         const room = getRoom(id);
         const clientId = String(input.client || '').slice(0, 80);
         if (!validRoom(id) || room.closed) return json(res, 410, { error: room.closed ? 'This room has been closed.' : 'Invalid room code.' });
+        if (url.pathname === '/call') {
+          if (!clientId || !room.clients.has(clientId)) return json(res, 409, { error: 'Reconnect to the room before calling.' });
+          const action = input.action;
+          if (action === 'start') {
+            if (room.call) return json(res, 409, { error: 'This room is already in a call.' });
+            if (![...room.clients.keys()].some(peer => peer !== clientId)) return json(res, 409, { error: 'Invite someone into this room before calling.' });
+            if (!['audio','video'].includes(input.type)) return json(res, 400, { error: 'Choose a voice or video call.' });
+            const call = room.call = { id: randomUUID(), from: clientId, name: String(input.name || 'Guest').slice(0, 24), type: input.type, to: null };
+            broadcast(room, 'callInvite', { callId: call.id, from: clientId, name: call.name, type: call.type }, clientId);
+            return json(res, 200, { ok: true, callId: call.id });
+          }
+          if (action === 'accept') {
+            if (!room.call || room.call.id !== input.callId || room.call.from === clientId || room.call.to) return json(res, 409, { error: 'That call is no longer available.' });
+            room.call.to = clientId;
+            const peer = room.clients.get(room.call.from);
+            peer?.res.write(`event: callAccepted\ndata: ${JSON.stringify({ callId: room.call.id, peerId: clientId, peerName: String(input.name || 'Guest').slice(0, 24) })}\n\n`);
+            return json(res, 200, { ok: true, peerId: room.call.from, type: room.call.type });
+          }
+          if (action === 'decline' || action === 'end') {
+            const invitedPeer = action === 'decline' && room.call?.to == null && room.call?.from !== clientId && room.clients.has(clientId);
+            if (!room.call || room.call.id !== input.callId || (!invitedPeer && room.call.from !== clientId && room.call.to !== clientId)) return json(res, 404, { error: 'Call not found.' });
+            const call = room.call; room.call = null;
+            broadcast(room, action === 'decline' ? 'callDeclined' : 'callEnded', { callId: call.id, reason: action }, clientId);
+            return json(res, 200, { ok: true });
+          }
+          return json(res, 400, { error: 'Unknown call action.' });
+        }
+        if (url.pathname === '/signal') {
+          const call = room.call;
+          if (!call || call.id !== input.callId || (call.from !== clientId && call.to !== clientId)) return json(res, 404, { error: 'Call is no longer active.' });
+          const targetId = call.from === clientId ? call.to : call.from;
+          const target = room.clients.get(targetId);
+          if (!target || !input.signal || !['offer','answer','ice'].includes(input.signal.type)) return json(res, 400, { error: 'Could not relay the call connection.' });
+          target.res.write(`event: callSignal\ndata: ${JSON.stringify({ callId: call.id, from: clientId, signal: input.signal })}\n\n`);
+          return json(res, 200, { ok: true });
+        }
         if (url.pathname === '/send') {
           const name = String(input.name || 'Guest').trim().slice(0, 24) || 'Guest';
           const item = { id: randomUUID(), name, senderId: clientId, time: new Date().toISOString(), expiresAt: ttlFor(input.expiry) ? Date.now() + ttlFor(input.expiry) : null, readBy: new Set() };
@@ -125,6 +162,7 @@ const server = http.createServer((req, res) => {
           return json(res, 200, { ok: true });
         }
         if (action === 'panic') {
+          if (room.call) { broadcast(room, 'callEnded', { callId: room.call.id, reason: 'room closed' }); room.call = null; }
           room.closed = true; room.messages = [];
           for (const timer of room.timers.values()) clearTimeout(timer);
           room.timers.clear(); broadcast(room, 'closed', {}); return json(res, 200, { ok: true });
