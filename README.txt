@@ -60,3 +60,9 @@ Message organization
 - Save messages in this browser, copy their text, or forward a text summary
   into the current room. Saved items are local to this browser and room.
 - Messages that expire or are unsent are automatically removed from the pin.
+
+Local preferences
+- Configure read receipts, typing indicators, notification previews and sounds.
+- Adjust text size, contrast, reduced motion, color, backdrop and voice playback speed.
+- Save drafts, use quick replies, and show unread message counts in the page title.
+- Preferences, drafts and saved messages live in this browser. They do not sync.
