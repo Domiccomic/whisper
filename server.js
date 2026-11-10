@@ -12,15 +12,18 @@ function getRoom(id) {
   if (!rooms.has(id)) rooms.set(id, { clients: new Map(), messages: [], timers: new Map(), theme: 'fern', closed: false });
   return rooms.get(id);
 }
-function publicMessage(message) {
-  const { secret, ...safe } = message;
+function publicMessage(message, viewerId = '') {
+  const { secret, senderId, ...safe } = message;
   if (secret) { safe.message = undefined; safe.data = undefined; safe.options = undefined; safe.votes = undefined; safe.locked = true; }
   safe.readBy = [...(message.readBy || [])];
+  safe.mine = Boolean(senderId && senderId === viewerId);
   return safe;
 }
 function broadcast(room, type, data, except = '') {
-  const packet = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const [id, client] of room.clients) if (id !== except) client.write(packet);
+  for (const [id, client] of room.clients) if (id !== except) {
+    const payload = (type === 'message' || type === 'update') ? publicMessage(data, id) : data;
+    client.res.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`);
+  }
 }
 function json(res, status, data) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -37,7 +40,7 @@ function expireMessage(room, item, except = '') {
 function publish(room, item) {
   room.messages.push(item);
   if (item.expiresAt) room.timers.set(item.id, setTimeout(() => expireMessage(room, item), Math.max(0, item.expiresAt - Date.now())).unref());
-  broadcast(room, 'message', publicMessage(item));
+  broadcast(room, 'message', item);
 }
 function cleanupExpired(room) {
   room.messages = room.messages.filter(item => !item.expiresAt || item.expiresAt > Date.now());
@@ -55,13 +58,14 @@ const server = http.createServer((req, res) => {
     if (!validRoom(id) || !clientId) return json(res, 400, { error: 'Invalid room or guest.' });
     const room = getRoom(id); cleanupExpired(room);
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
-    res.write(`event: history\ndata: ${JSON.stringify(room.messages.map(publicMessage))}\n\n`);
+    res.write(`event: history\ndata: ${JSON.stringify(room.messages.map(item => publicMessage(item, clientId)))}\n\n`);
     res.write(`event: theme\ndata: ${JSON.stringify({ theme: room.theme })}\n\n`);
     if (room.closed) res.write('event: closed\ndata: {}\n\n');
-    room.clients.set(clientId, res);
-    broadcast(room, 'presence', { count: room.clients.size });
+    const connection = { res, quiet: url.searchParams.get('quiet') === '1' };
+    room.clients.set(clientId, connection);
+    broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length });
     const heartbeat = setInterval(() => res.write(': keepalive\n\n'), 20000);
-    req.on('close', () => { clearInterval(heartbeat); if (room.clients.get(clientId) === res) room.clients.delete(clientId); broadcast(room, 'presence', { count: room.clients.size }); });
+    req.on('close', () => { clearInterval(heartbeat); if (room.clients.get(clientId) === connection) room.clients.delete(clientId); broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length }); });
     return;
   }
   if (req.method === 'POST' && (url.pathname === '/send' || url.pathname === '/action')) {
@@ -78,7 +82,8 @@ const server = http.createServer((req, res) => {
         if (!validRoom(id) || room.closed) return json(res, 410, { error: room.closed ? 'This room has been closed.' : 'Invalid room code.' });
         if (url.pathname === '/send') {
           const name = String(input.name || 'Guest').trim().slice(0, 24) || 'Guest';
-          const item = { id: randomUUID(), name, time: new Date().toISOString(), expiresAt: ttlFor(input.expiry) ? Date.now() + ttlFor(input.expiry) : null, readBy: new Set() };
+          const item = { id: randomUUID(), name, senderId: clientId, time: new Date().toISOString(), expiresAt: ttlFor(input.expiry) ? Date.now() + ttlFor(input.expiry) : null, readBy: new Set() };
+          if (input.reply && typeof input.reply === 'object') item.reply = { id: String(input.reply.id || '').slice(0, 80), name: String(input.reply.name || '').slice(0, 24), preview: String(input.reply.preview || '').slice(0, 120) };
           const scheduleAt = input.scheduleAt ? new Date(input.scheduleAt).getTime() : 0;
           if (scheduleAt && scheduleAt > Date.now()) {
             if (scheduleAt > Date.now() + 86400000) return json(res, 400, { error: 'Scheduled messages can be set up to 24 hours ahead.' });
@@ -93,6 +98,7 @@ const server = http.createServer((req, res) => {
             item.type = input.type; item.data = input.data;
             item.message = input.type === 'photo' ? 'Photo' : 'Voice note';
           } else if (input.type === 'poll') {
+            if (input.oneTime) return json(res, 400, { error: 'Polls stay available so everyone can vote.' });
             const question = String(input.question || '').trim().slice(0, 140);
             const options = Array.isArray(input.options) ? input.options.map(value => String(value).trim().slice(0, 70)).filter(Boolean).slice(0, 5) : [];
             if (!question || options.length < 2) return json(res, 400, { error: 'A poll needs a question and at least two choices.' });
@@ -107,10 +113,16 @@ const server = http.createServer((req, res) => {
         }
         if (!clientId) return json(res, 400, { error: 'Missing guest ID.' });
         const action = input.action;
-        if (action === 'typing') { broadcast(room, 'typing', { name: String(input.name || 'Guest').slice(0, 24), typing: Boolean(input.typing) }, clientId); return json(res, 200, { ok: true }); }
+        if (action === 'typing') { const sender = room.clients.get(clientId); if (!sender?.quiet) broadcast(room, 'typing', { name: String(input.name || 'Guest').slice(0, 24), typing: Boolean(input.typing) }, clientId); return json(res, 200, { ok: true }); }
         if (action === 'theme') {
           if (!['fern','ocean','plum','sunset'].includes(input.theme)) return json(res, 400, { error: 'Choose one of the available room themes.' });
           room.theme = input.theme; broadcast(room, 'theme', { theme: room.theme }); return json(res, 200, { ok: true });
+        }
+        if (action === 'quiet') {
+          const current = room.clients.get(clientId);
+          if (current) current.quiet = Boolean(input.quiet);
+          broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length });
+          return json(res, 200, { ok: true });
         }
         if (action === 'panic') {
           room.closed = true; room.messages = [];
@@ -129,14 +141,25 @@ const server = http.createServer((req, res) => {
           item.reactions ||= {};
           const reactors = new Set(item.reactions[emoji] || []);
           if (reactors.has(clientId)) reactors.delete(clientId); else reactors.add(clientId);
-          item.reactions[emoji] = [...reactors]; broadcast(room, 'update', publicMessage(item)); return json(res, 200, { ok: true });
+          item.reactions[emoji] = [...reactors]; broadcast(room, 'update', item); return json(res, 200, { ok: true });
         }
         if (action === 'vote') {
           const index = Number(input.option); if (!item.options || !Number.isInteger(index) || index < 0 || index >= item.options.length) return json(res, 400, { error: 'That poll choice is unavailable.' });
-          item.votes ||= {}; item.votes[clientId] = index; broadcast(room, 'update', publicMessage(item)); return json(res, 200, { ok: true });
+          item.votes ||= {}; item.votes[clientId] = index; broadcast(room, 'update', item); return json(res, 200, { ok: true });
         }
         if (action === 'read') {
-          item.readBy ||= new Set(); item.readBy.add(String(input.name || 'Guest').slice(0, 24)); broadcast(room, 'update', publicMessage(item), clientId); return json(res, 200, { ok: true });
+          item.readBy ||= new Set(); item.readBy.add(String(input.name || 'Guest').slice(0, 24)); broadcast(room, 'update', item, clientId); return json(res, 200, { ok: true });
+        }
+        if (action === 'edit') {
+          if (item.senderId !== clientId) return json(res, 403, { error: 'You can only edit your own messages.' });
+          if (item.type || item.secret) return json(res, 400, { error: 'Only regular text messages can be edited.' });
+          const message = String(input.message || '').trim().slice(0, 2000);
+          if (!message) return json(res, 400, { error: 'Message cannot be empty.' });
+          item.message = message; item.editedAt = new Date().toISOString(); broadcast(room, 'update', item); return json(res, 200, { ok: true });
+        }
+        if (action === 'unsend') {
+          if (item.senderId !== clientId) return json(res, 403, { error: 'You can only unsend your own messages.' });
+          expireMessage(room, item); return json(res, 200, { ok: true });
         }
         return json(res, 400, { error: 'Unknown action.' });
       } catch { return json(res, 400, { error: 'Invalid request.' }); }

@@ -35,3 +35,10 @@ Chat features
 Voice recording needs HTTPS (provided by Render) and browser microphone access.
 Scheduled messages, rooms, and uploaded media are in memory and are lost if the
 service restarts. The panic close cannot be undone for that room code.
+
+More chat controls
+- Quiet mode hides you from the online count and suppresses browser alerts.
+- Enable browser alerts explicitly; they appear only when the tab is away and
+  browser permission has been granted.
+- Reply to messages with a quote that jumps back to the original. Edit or unsend
+  your own text messages; the server checks who sent each message.
