@@ -69,3 +69,8 @@ Local preferences
 - Record and share 10-second video clips, add captions to photos/videos, and send a one-time location or contact card when you choose.
 - Add image and animated-GIF stickers to a personal sticker pack; sent stickers are shared as room images.
 - Install Whisper as a home-screen app. The shell loads offline; messages need a connection, while drafts remain on the device.
+
+Room management
+- Hosts can set a room name, description, emoji icon, guest limit, invite lifetime, and lock new guests out.
+- Hosts can promote moderators; hosts and moderators can remove guests. Quiet members are omitted from the visible member list.
+- Room membership, roles, locks, and invite timers are held in memory and reset if the service restarts. Guests are anonymous; this is not account-based access control.

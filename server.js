@@ -14,7 +14,7 @@ const rooms = new Map();
 const ttlFor = value => ({ '10 minutes': 600000, '1 hour': 3600000, '1 day': 86400000 }[value] || 0);
 
 function getRoom(id) {
-  if (!rooms.has(id)) rooms.set(id, { clients: new Map(), messages: [], timers: new Map(), theme: 'fern', closed: false, call: null, pinnedId: null });
+  if (!rooms.has(id)) rooms.set(id, { clients: new Map(), messages: [], timers: new Map(), theme: 'fern', closed: false, call: null, pinnedId: null, owner: null, moderators: new Set(), membersSeen: new Set(), banned: new Set(), name: '', description: '', avatar: '◌', maxMembers: 8, locked: false, inviteExpiresAt: 0 });
   return rooms.get(id);
 }
 function publicMessage(message, viewerId = '') {
@@ -30,6 +30,12 @@ function broadcast(room, type, data, except = '') {
     client.res.write(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`);
   }
 }
+function presenceData(room) {
+  const members = [...room.clients.entries()].filter(([, client]) => !client.quiet).map(([id, client]) => ({ id, name: client.name || 'Guest', role: id === room.owner ? 'host' : room.moderators.has(id) ? 'moderator' : 'guest' }));
+  return { count: members.length, members };
+}
+function roomInfoData(room, memberId) { return { name: room.name, description: room.description, avatar: room.avatar, locked: room.locked, maxMembers: room.maxMembers, inviteLifetime: room.inviteLifetime || 'never', isHost: room.owner === memberId }; }
+function sendRoomInfo(room) { for (const [memberId, member] of room.clients) member.res.write(`event: roomInfo\ndata: ${JSON.stringify(roomInfoData(room, memberId))}\n\n`); }
 function json(res, status, data) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   res.end(JSON.stringify(data));
@@ -68,18 +74,26 @@ const server = http.createServer((req, res) => {
     const clientId = String(url.searchParams.get('client') || '').slice(0, 80);
     if (!validRoom(id) || !clientId) return json(res, 400, { error: 'Invalid room or guest.' });
     const room = getRoom(id); cleanupExpired(room);
+    const knownMember = room.membersSeen.has(clientId);
+    if (room.banned.has(clientId)) return json(res, 403, { error: 'You no longer have access to this room.' });
+    if (room.inviteExpiresAt && room.inviteExpiresAt < Date.now() && !knownMember) return json(res, 410, { error: 'This room invite has expired.' });
+    if (room.locked && !knownMember) return json(res, 423, { error: 'This room is locked to new guests.' });
+    if (!knownMember && room.clients.size >= room.maxMembers) return json(res, 409, { error: 'This room has reached its guest limit.' });
+    room.membersSeen.add(clientId);
+    if (!room.owner) room.owner = clientId;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
     res.write(`event: history\ndata: ${JSON.stringify(room.messages.map(item => publicMessage(item, clientId)))}\n\n`);
     res.write(`event: theme\ndata: ${JSON.stringify({ theme: room.theme })}\n\n`);
     const pinned = room.messages.find(item => item.id === room.pinnedId);
     if (pinned) res.write(`event: pinned\ndata: ${JSON.stringify(publicMessage(pinned, clientId))}\n\n`);
     if (room.closed) res.write('event: closed\ndata: {}\n\n');
-    const connection = { res, quiet: url.searchParams.get('quiet') === '1' };
+    const connection = { res, quiet: url.searchParams.get('quiet') === '1', name: String(url.searchParams.get('name') || 'Guest').slice(0, 24) };
     room.clients.set(clientId, connection);
+    res.write(`event: roomInfo\ndata: ${JSON.stringify(roomInfoData(room, clientId))}\n\n`);
     if (room.call && room.call.from !== clientId && !room.call.to) res.write(`event: callInvite\ndata: ${JSON.stringify({ callId: room.call.id, from: room.call.from, name: room.call.name, type: room.call.type })}\n\n`);
-    broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length });
+    broadcast(room, 'presence', presenceData(room));
     const heartbeat = setInterval(() => res.write(': keepalive\n\n'), 20000);
-    req.on('close', () => { clearInterval(heartbeat); if (room.clients.get(clientId) === connection) { room.clients.delete(clientId); if (room.call && (room.call.from === clientId || room.call.to === clientId)) { broadcast(room, 'callEnded', { callId: room.call.id, reason: 'disconnected' }, clientId); room.call = null; } } broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length }); });
+    req.on('close', () => { clearInterval(heartbeat); if (room.clients.get(clientId) === connection) { room.clients.delete(clientId); room.moderators.delete(clientId); if (room.owner === clientId) { room.owner = room.clients.keys().next().value || null; sendRoomInfo(room); } if (room.call && (room.call.from === clientId || room.call.to === clientId)) { broadcast(room, 'callEnded', { callId: room.call.id, reason: 'disconnected' }, clientId); room.call = null; } } broadcast(room, 'presence', presenceData(room)); });
     return;
   }
   if (req.method === 'POST' && ['/send', '/action', '/call', '/signal'].includes(url.pathname)) {
@@ -161,8 +175,36 @@ const server = http.createServer((req, res) => {
           publish(room, item);
           return json(res, 200, { ok: true });
         }
-        if (!clientId) return json(res, 400, { error: 'Missing guest ID.' });
+        if (!clientId || !room.clients.has(clientId)) return json(res, 403, { error: 'Join the room before changing it.' });
         const action = input.action;
+        if (action === 'profile') { const member = room.clients.get(clientId); member.name = String(input.name || 'Guest').trim().slice(0, 24) || 'Guest'; broadcast(room, 'presence', presenceData(room)); return json(res, 200, { ok: true }); }
+        if (action === 'room-settings') {
+          if (room.owner !== clientId) return json(res, 403, { error: 'Only the room host can change room settings.' });
+          const maxMembers = Number(input.maxMembers);
+          if (!Number.isInteger(maxMembers) || maxMembers < 2 || maxMembers > 30) return json(res, 400, { error: 'Choose a guest limit between 2 and 30.' });
+          if (maxMembers < room.clients.size) return json(res, 409, { error: 'The guest limit cannot be lower than the number of people here.' });
+          room.name = String(input.name || '').trim().slice(0, 48); room.description = String(input.description || '').trim().slice(0, 180);
+          room.avatar = [...String(input.avatar || '◌').trim()].slice(0, 4).join('') || '◌'; room.maxMembers = maxMembers; room.locked = Boolean(input.locked);
+          const inviteMs = ({ '1 hour': 3600000, '1 day': 86400000, '7 days': 604800000, never: 0 })[input.inviteLifetime];
+          if (inviteMs === undefined) return json(res, 400, { error: 'Choose an invite lifetime.' });
+          room.inviteLifetime = input.inviteLifetime;
+          room.inviteExpiresAt = inviteMs ? Date.now() + inviteMs : 0;
+          sendRoomInfo(room);
+          return json(res, 200, { ok: true });
+        }
+        if (action === 'role') {
+          if (room.owner !== clientId) return json(res, 403, { error: 'Only the room host can assign moderators.' });
+          const target = String(input.target || ''); if (!room.clients.has(target) || target === room.owner) return json(res, 404, { error: 'Choose another current room member.' });
+          if (input.role === 'moderator') room.moderators.add(target); else room.moderators.delete(target);
+          broadcast(room, 'presence', presenceData(room)); return json(res, 200, { ok: true });
+        }
+        if (action === 'remove-member') {
+          if (room.owner !== clientId && !room.moderators.has(clientId)) return json(res, 403, { error: 'Only a host or moderator can remove a guest.' });
+          const target = String(input.target || ''), member = room.clients.get(target);
+          if (!member || target === room.owner || target === clientId) return json(res, 404, { error: 'Choose a guest who can be removed.' });
+          member.res.write('event: removed\ndata: {}\n\n'); member.res.end(); room.clients.delete(target); room.moderators.delete(target); room.banned.add(target);
+          broadcast(room, 'presence', presenceData(room)); return json(res, 200, { ok: true });
+        }
         if (action === 'typing') { const sender = room.clients.get(clientId); if (!sender?.quiet) broadcast(room, 'typing', { name: String(input.name || 'Guest').slice(0, 24), typing: Boolean(input.typing) }, clientId); return json(res, 200, { ok: true }); }
         if (action === 'theme') {
           if (!['fern','ocean','plum','sunset'].includes(input.theme)) return json(res, 400, { error: 'Choose one of the available room themes.' });
@@ -183,7 +225,7 @@ const server = http.createServer((req, res) => {
         if (action === 'quiet') {
           const current = room.clients.get(clientId);
           if (current) current.quiet = Boolean(input.quiet);
-          broadcast(room, 'presence', { count: [...room.clients.values()].filter(client => !client.quiet).length });
+          broadcast(room, 'presence', presenceData(room));
           return json(res, 200, { ok: true });
         }
         if (action === 'panic') {
